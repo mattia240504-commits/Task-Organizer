@@ -1,4 +1,4 @@
-name = "promemoria-claude"
+name = "promemoria"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -23,4 +23,4 @@ crons = ["* * * * *"]
 TIMEZONE = "Europe/Rome"
 VAPID_SUBJECT = "mailto:promemoria@example.com"
 # Segreti (da impostare con `npx wrangler secret put NOME`):
-# ANTHROPIC_API_KEY, APP_TOKEN, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
+# APP_TOKEN, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY

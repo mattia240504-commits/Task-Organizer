@@ -1,6 +1,6 @@
 // Server dei promemoria vocali: API per Siri/Comandi rapidi e per la web app, più il controllo
 // periodico (cron) che invia le notifiche.
-import { interpret, type NewReminder, type OpenReminder } from "./claude";
+import { interpret, type NewReminder, type OpenReminder } from "./parser";
 import { describeRoute, geocode, route, type LatLon } from "./geo";
 import { sendPush, type PushMessage, type VapidKeys } from "./push";
 import { describeNow, localToUtc, nextOccurrence, nextOccurrenceAfter, type Recurrence } from "./time";
@@ -8,8 +8,6 @@ import { describeNow, localToUtc, nextOccurrence, nextOccurrenceAfter, type Recu
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  ANTHROPIC_API_KEY: string;
-  ANTHROPIC_BASE_URL?: string;
   APP_TOKEN: string;
   TIMEZONE: string;
   VAPID_PUBLIC_KEY?: string;
@@ -86,7 +84,7 @@ function validTimezone(tz: unknown): tz is string {
   }
 }
 
-/** Ripulisce i campi prodotti da Claude e calcola l'istante UTC della notifica. */
+/** Ripulisce i campi prodotti dall'interprete e calcola l'istante UTC della notifica. */
 export function normalize(r: NewReminder, tz: string) {
   const due_date = r.due_date && DATE_RE.test(r.due_date) ? r.due_date : null;
   const due_time = due_date && r.due_time && TIME_RE.test(r.due_time) ? r.due_time : null;
@@ -124,13 +122,10 @@ async function handleVoice(req: Request, env: Env): Promise<Response> {
       : undefined;
 
   const open = await openReminders(env);
-  const result = await interpret({
-    apiKey: env.ANTHROPIC_API_KEY,
-    baseURL: env.ANTHROPIC_BASE_URL,
+  const result = interpret(
     text,
-    now: describeNow(Date.now(), tz),
-    timezone: tz,
-    open: open.map(
+    describeNow(Date.now(), tz),
+    open.map(
       (r): OpenReminder => ({
         id: r.id,
         title: r.title,
@@ -141,7 +136,7 @@ async function handleVoice(req: Request, env: Env): Promise<Response> {
         place_name: r.place_name,
       }),
     ),
-  });
+  );
 
   const openIds = new Set(open.map((r) => r.id));
   const created: ReminderRow[] = [];

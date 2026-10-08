@@ -17,7 +17,7 @@ export interface Route {
   walk_min: number;
 }
 
-const USER_AGENT = "promemoria-claude/1.0 (assistente personale)";
+const USER_AGENT = "promemoria/1.0 (assistente personale)";
 
 /** Distanza in linea d'aria (metri). */
 export function haversine(a: LatLon, b: LatLon): number {

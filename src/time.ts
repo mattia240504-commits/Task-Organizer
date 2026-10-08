@@ -38,7 +38,7 @@ export function utcToLocal(utcMs: number, tz: string): string {
 
 const WEEKDAYS = ["domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"];
 
-/** Descrizione del momento attuale per il prompt di Claude. */
+/** Descrizione del momento attuale per l'interprete delle frasi. */
 export function describeNow(utcMs: number, tz: string) {
   const local = utcToLocal(utcMs, tz);
   const [date, time] = local.split("T");

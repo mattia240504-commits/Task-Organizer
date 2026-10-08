@@ -1,7 +1,7 @@
 {
   "name": "Promemoria",
   "short_name": "Promemoria",
-  "description": "Promemoria vocali interpretati da Claude",
+  "description": "Promemoria vocali",
   "lang": "it",
   "start_url": "/",
   "scope": "/",

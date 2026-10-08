@@ -212,7 +212,7 @@ async function send(text) {
   reply.hidden = false;
   reply.classList.add("loading");
   $("#reply-heard").textContent = `“${text}”`;
-  $("#reply-text").textContent = "Ci penso";
+  $("#reply-text").textContent = "Un attimo";
   $("#compose-input").value = "";
   try {
     const data = await api("/api/voice", {

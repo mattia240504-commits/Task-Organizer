@@ -1,7 +1,7 @@
 {
-  "name": "promemoria-claude",
+  "name": "promemoria",
   "version": "1.0.0",
-  "description": "Promemoria vocali con Siri e Claude",
+  "description": "Promemoria vocali con Siri, gratuiti",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -19,10 +19,6 @@
     "url": "https://github.com/mattia240504-commits/Task-Organizer/issues"
   },
   "homepage": "https://github.com/mattia240504-commits/Task-Organizer#readme",
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.132.1",
-    "zod": "^4.6.5"
-  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261008.1",
     "@types/node": "^26.6.4",
