@@ -2,6 +2,8 @@ name = "promemoria"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
 
 [assets]
 directory = "./public"
