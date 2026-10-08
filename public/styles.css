@@ -174,3 +174,20 @@ code {
   display: block; background: var(--card); padding: 10px 12px; border-radius: 10px; font-size: 13px; overflow-wrap: anywhere;
   user-select: all; -webkit-user-select: all;
 }
+
+/* Domanda in attesa di risposta */
+.reply.asking { border-left-color: #0a84ff; }
+.reply.asking #reply-text { font-weight: 600; }
+.link-btn.small { font-size: 14px; padding: 6px 0 0; }
+.link-btn.strong { font-weight: 700; }
+
+/* Modifica promemoria */
+.item .body { cursor: pointer; }
+.field { display: grid; gap: 6px; font-size: 13px; color: var(--muted); font-weight: 600; margin-top: 14px; }
+.field input, .field select, .field textarea {
+  font: inherit; font-size: 16px; font-weight: 400; color: var(--text); background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; min-width: 0;
+}
+.field textarea { resize: vertical; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#editor .sheet-head h2 { font-size: 17px; }

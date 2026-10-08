@@ -1,5 +1,5 @@
 // Service worker: funzionamento offline della lista e notifiche push.
-const CACHE = "promemoria-v1";
+const CACHE = "promemoria-v2";
 const SHELL = ["/", "/index.html", "/app.js", "/styles.css", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

@@ -19,12 +19,29 @@ export interface NewReminder {
   place_query: string | null;
 }
 
+/** Modifica di un promemoria esistente: i campi assenti restano invariati. */
+export interface ReminderUpdate {
+  id: string;
+  title?: string;
+  notes?: string | null;
+  due_date?: string | null;
+  due_time?: string | null;
+  remind_at?: string | null;
+  recurrence?: NewReminder["recurrence"];
+  place_query?: string | null;
+}
+
 export interface VoiceResult {
   create: NewReminder[];
+  update: ReminderUpdate[];
   complete_ids: string[];
   delete_ids: string[];
   reply: string;
+  /** Se presente, prima di salvare bisogna chiedere questo all'utente. */
+  question: string | null;
 }
+
+export const emptyResult = (): VoiceResult => ({ create: [], update: [], complete_ids: [], delete_ids: [], reply: "", question: null });
 
 export interface OpenReminder {
   id: string;
@@ -34,6 +51,8 @@ export interface OpenReminder {
   remind_at: string | null;
   recurrence: string;
   place_name: string | null;
+  kind?: string;
+  created_at?: number;
 }
 
 export interface Now {
@@ -188,6 +207,7 @@ interface Extracted {
   explicitDate: boolean;
   relative: string | null; // "tra 20 minuti" -> istante locale preciso
   notes: string | null;
+  ambiguousHour: boolean; // "alle 7" senza indicare mattina o sera
 }
 
 function nextWeekday(today: string, wd: number, allowToday: boolean): string {
@@ -222,7 +242,7 @@ export function extract(segment: string, now: Now): Extracted {
   const today = now.date;
   const out: Extracted = {
     date: null, time: null, period: null, deadline: false, recurrence: "nessuna", priority: "normale",
-    place: null, title: "", explicitDate: false, relative: null, notes: null,
+    place: null, title: "", explicitDate: false, relative: null, notes: null, ambiguousHour: false,
   };
   const take = (re: RegExp, fn: (...m: string[]) => void) => {
     const m = re.exec(s);
@@ -369,6 +389,8 @@ export function extract(segment: string, now: Now): Extracted {
         else if (p === "notte" && h < 5) h += 0;
         else if (!p && h >= 1 && h <= 11 && EVENING_RE.test(segment)) h += 12;
         else if (!p && h >= 1 && h <= 6 && !MORNING_RE.test(segment)) h += 12; // "alle 3" = 15:00
+        if (!p && h >= 5 && h <= 8 && !EVENING_RE.test(segment) && !MORNING_RE.test(segment)) out.ambiguousHour = true;
+        if (!p && h >= 17 && h <= 18 && !EVENING_RE.test(segment) && Number(hh) <= 6) out.ambiguousHour = true;
         setTime(h, m);
       },
     ) ||
@@ -378,6 +400,12 @@ export function extract(segment: string, now: Now): Extracted {
   take(/\b(?:in|di|nel|nella|la|il|questo|questa|domani)\s+(mattinata|mattina|pomeriggio|sera|serata|notte)\b/i, (_, p) => {
     const k = p.toLowerCase().replace("mattinata", "mattina").replace("serata", "sera");
     out.period = PERIODS[k];
+    if (out.time) {
+      const h = Number(out.time.slice(0, 2));
+      if ((k === "sera" || k === "pomeriggio") && h < 12) out.time = `${pad(h + 12)}${out.time.slice(2)}`;
+      if (k === "mattina" && h >= 12) out.time = `${pad(h - 12)}${out.time.slice(2)}`;
+      out.ambiguousHour = false;
+    }
   });
 
   // Luogo
@@ -513,6 +541,10 @@ const tokens = (s: string) =>
     .map(stem);
 
 export function bestMatch(text: string, open: OpenReminder[]): OpenReminder | null {
+  return bestMatchScored(text, open)?.r ?? null;
+}
+
+function bestMatchScored(text: string, open: OpenReminder[]): { r: OpenReminder; score: number } | null {
   const q = new Set(tokens(text));
   if (!q.size) return null;
   let best: OpenReminder | null = null;
@@ -527,7 +559,7 @@ export function bestMatch(text: string, open: OpenReminder[]): OpenReminder | nu
       bestScore = score;
     }
   }
-  return bestScore >= 0.5 ? best : null;
+  return best && bestScore >= 0.5 ? { r: best, score: bestScore } : null;
 }
 
 function refDate(r: OpenReminder) {
@@ -597,16 +629,107 @@ function answerQuery(text: string, open: OpenReminder[], now: Now): string {
 }
 
 // ---------------------------------------------------------------------------
+// Modifiche a voce: "sposta il dentista a giovedì alle 11", "rimanda la spesa di un giorno"
+
+const EDIT_RE = /^(?:sposta(?:mi|re)?|rimanda|rinvia|posticipa|anticipa|cambia(?:\s+(?:l['’]\s*orario|la\s+data|l['’]\s*ora)\s+(?:di|del|della|dello|dell['’]))?|modifica)\s+/i;
+const RENAME_RE = /^(?:rinomina|cambia\s+(?:il\s+)?(?:nome|titolo)\s+(?:di|del|della|dello|dell['’]|a)?)\s*(.+?)\s+(?:in|con|come)\s+(.+)$/i;
+const UNDO_RE = /^(?:annulla|cancella|elimina|togli|rimuovi)\s+(?:l['’]\s*)?(?:ultim[oa](?:\s+promemoria)?|quell[oa]\s+(?:di\s+)?prima|l['’]ultima\s+cosa)\b/i;
+const SHIFT_RE = /\b(?:di|avanti\s+di|indietro\s+di)\s+(\d+|un|una|mezz)['’]?\s*(minut[oi]|or[ae]|giorn[oi]|settiman[ae])\b/i;
+
+function shiftLocal(date: string | null, time: string | null, minutes: number) {
+  if (!date) return { date, time };
+  const t = time ?? "09:00";
+  const moved = addMinutes(`${date}T${t}`, minutes);
+  return { date: moved.slice(0, 10), time: time ? moved.slice(11) : null };
+}
+
+function editReminder(norm: string, verb: string, now: Now, open: OpenReminder[]): VoiceResult {
+  const result = emptyResult();
+  let rest = norm.slice(verb.length);
+  // "dalle 10 alle 11", "da oggi a domani": il vecchio valore non conta
+  rest = rest.replace(new RegExp(`\\b(?:da|dal|dalle|dall['’])\\s*(?:oggi|domani|dopodomani|stasera|stamattina|${WD}|\\d{1,2}(?:[:.]\\d{2})?)(?=\\s)`, "i"), " ");
+  let shift = 0;
+  const sh = SHIFT_RE.exec(rest);
+  if (sh) {
+    const k = /^\d+$/.test(sh[1]) ? Number(sh[1]) : sh[1].toLowerCase().startsWith("mezz") ? 0.5 : 1;
+    const u = sh[2].toLowerCase();
+    const mins = u.startsWith("minut") ? k : u.startsWith("or") ? k * 60 : u.startsWith("giorn") ? k * 1440 : k * 10080;
+    shift = /^anticipa/i.test(verb) || /indietro/i.test(sh[0]) ? -mins : mins;
+    rest = rest.replace(sh[0], " ");
+  }
+  const e = extract(rest, now);
+  const target = bestMatch(e.title, open);
+  if (!target) {
+    return { ...result, reply: e.title ? `Non ho trovato nessun promemoria che corrisponda a "${e.title}".` : "Quale promemoria vuoi modificare?" };
+  }
+
+  let date: string | null;
+  let time: string | null;
+  let recurrence = (target.recurrence as NewReminder["recurrence"]) ?? "nessuna";
+  const currentDate = target.due_date ?? target.remind_at?.slice(0, 10) ?? null;
+  if (shift) {
+    ({ date, time } = shiftLocal(currentDate ?? now.date, target.due_time, shift));
+  } else {
+    if (!e.date && !e.time && !e.period && !e.relative && e.recurrence === "nessuna") {
+      return { ...result, reply: `Dimmi anche quando: per esempio "sposta ${target.title.toLowerCase()} a giovedì alle 11".` };
+    }
+    date = e.date ?? (e.time || e.period ? currentDate : currentDate);
+    time = e.time ?? (e.period ? null : target.due_time);
+    if (e.recurrence !== "nessuna") recurrence = e.recurrence;
+  }
+  const built = buildReminder(
+    {
+      ...e,
+      title: target.title,
+      date,
+      time,
+      recurrence,
+      deadline: target.kind === "scadenza",
+      place: target.place_name,
+      explicitDate: true,
+      relative: shift ? null : e.relative,
+      period: e.period,
+    },
+    now,
+    { date: null },
+  );
+  if (!built) return { ...result, reply: "Non sono riuscito a fare la modifica, riprova." };
+  result.update.push({ id: target.id, due_date: built.due_date, due_time: built.due_time, remind_at: built.remind_at, recurrence: built.recurrence });
+  result.reply = `Ok, ho spostato ${target.title} ${describeWhen({ ...built, kind: target.kind ?? built.kind }, now) || "senza data"}.`;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Punto d'ingresso
 
 export function interpret(text: string, now: Now, open: OpenReminder[]): VoiceResult {
   const norm = normalizeText(text).trim();
-  const result: VoiceResult = { create: [], complete_ids: [], delete_ids: [], reply: "" };
+  const result = emptyResult();
   if (!norm) return { ...result, reply: "Non ho sentito nulla, riprova." };
 
   if (QUERY_RE.test(norm) || (/\?\s*$/.test(norm) && /\b(cosa|che|quali|quando|ho)\b/i.test(norm))) {
     return { ...result, reply: answerQuery(norm, open, now) };
   }
+
+  // Annulla l'ultimo promemoria aggiunto
+  if (UNDO_RE.test(norm)) {
+    const last = [...open].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
+    if (!last) return { ...result, reply: "Non c'è niente da annullare." };
+    return { ...result, delete_ids: [last.id], reply: `Ok, ho tolto l'ultimo promemoria: ${last.title}.` };
+  }
+
+  // Rinomina
+  const ren = RENAME_RE.exec(norm);
+  if (ren) {
+    const target = bestMatch(ren[1], open);
+    const title = makeTitle(ren[2]);
+    if (!target || !title) return { ...result, reply: "Non ho capito quale promemoria rinominare." };
+    return { ...result, update: [{ id: target.id, title }], reply: `Ok, ora si chiama: ${title}.` };
+  }
+
+  // Sposta / rimanda / anticipa / cambia
+  const edit = EDIT_RE.exec(norm);
+  if (edit) return editReminder(norm, edit[0], now, open);
 
   const del = DELETE_RE.exec(norm);
   const done = !del && COMPLETE_RE.exec(norm);
@@ -615,24 +738,31 @@ export function interpret(text: string, now: Now, open: OpenReminder[]): VoiceRe
     const pieces = rest.split(/\s*(?:,|\s+e\s+(?:ho\s+)?)\s*/i).filter(Boolean);
     const remaining = [...open];
     const found: OpenReminder[] = [];
+    let weakest = 1;
     for (const p of pieces.length ? pieces : [rest]) {
-      const m = bestMatch(done ? `${p} ${rest.split(" ")[0]}` : p, remaining) ?? bestMatch(p, remaining);
+      const m = bestMatchScored(done ? `${p} ${rest.split(" ")[0]}` : p, remaining) ?? bestMatchScored(p, remaining);
       if (m) {
-        found.push(m);
-        remaining.splice(remaining.indexOf(m), 1);
+        found.push(m.r);
+        weakest = Math.min(weakest, m.score);
+        remaining.splice(remaining.indexOf(m.r), 1);
       }
     }
     if (!found.length) {
       return { ...result, reply: `Non ho trovato nessun promemoria che corrisponda a "${clean(rest)}".` };
     }
-    const titles = joinList(found.map((f) => f.title));
-    if (del) return { ...result, delete_ids: found.map((f) => f.id), reply: `Ho eliminato: ${titles}.` };
-    return { ...result, complete_ids: found.map((f) => f.id), reply: `Ottimo, ho segnato come fatto: ${titles}.` };
+    const titles = joinList(found.map((f) => `"${f.title}"`));
+    const out: VoiceResult = del
+      ? { ...result, delete_ids: found.map((f) => f.id), reply: `Ho eliminato: ${titles}.` }
+      : { ...result, complete_ids: found.map((f) => f.id), reply: `Ottimo, ho segnato come fatto: ${titles}.` };
+    // Corrispondenza incerta: meglio chiedere
+    if (weakest < 0.75) out.question = `Intendi ${titles}?`;
+    return out;
   }
 
   // Creazione
   const ctx: { date: string | null } = { date: null };
   let lastVerb: string | null = null;
+  let ambiguous: NewReminder | null = null;
   for (const seg of splitSegments(norm)) {
     const e = extract(seg, now);
     // "fare la spesa, la lavatrice" -> "Fare la lavatrice"
@@ -648,15 +778,118 @@ export function interpret(text: string, now: Now, open: OpenReminder[]): VoiceRe
     const r = buildReminder(e, now, ctx);
     if (!r) continue;
     if (e.date && !ctx.date) ctx.date = e.date;
+    if (e.ambiguousHour && !ambiguous) ambiguous = r;
     result.create.push(r);
   }
 
-  if (!result.create.length) return { ...result, reply: "Non ho capito cosa devo ricordarti, puoi ripetere?" };
-  const descr = result.create.map((r) => {
+  if (!result.create.length) {
+    return { ...result, reply: "Non ho capito bene: cosa devo ricordarti, e quando?", question: "Non ho capito bene: cosa devo ricordarti, e quando?" };
+  }
+  result.reply = describeCreated(result.create, now);
+  if (ambiguous?.due_time) {
+    const h = Number(ambiguous.due_time.slice(0, 2)) % 12 || 12;
+    result.question = `${ambiguous.title} alle ${h}: di mattina o di sera?`;
+  }
+  // Una sola parola, senza verbo né data: probabilmente ho capito male
+  const only = result.create.length === 1 ? result.create[0] : null;
+  if (!result.question && only && !only.due_date && !only.remind_at && tokens(only.title).length <= 1 && !/(?:are|ere|ire)\b/i.test(only.title)) {
+    result.question = `Ho capito "${only.title}", senza data. Va bene così o vuoi rispiegarmelo?`;
+  }
+  return result;
+}
+
+export function describeCreated(create: NewReminder[], now: Now): string {
+  const descr = create.map((r) => {
     const w = describeWhen(r, now);
     return w ? `${r.title} ${w}` : r.title;
   });
-  result.reply =
-    result.create.length === 1 ? `Ok, ti ricorderò: ${descr[0]}.` : `Ok, ho aggiunto ${result.create.length} promemoria: ${joinList(descr)}.`;
-  return result;
+  return create.length === 1 ? `Ok, ti ricorderò: ${descr[0]}.` : `Ok, ho aggiunto ${create.length} promemoria: ${joinList(descr)}.`;
+}
+
+// ---------------------------------------------------------------------------
+// Risposta a una domanda di Siri ("sì", "no", "di sera", "no, alle 11", oppure una frase nuova)
+
+export const YES_RE = /^(?:s[iì]|ok|okay|va bene|giusto|esatto|perfetto|conferm[oa]|certo|corretto|s[iì] grazie|s[iì] esatto|s[iì] giusto|vai|procedi)[\s.!]*$/i;
+export const NO_RE = /^(?:no|annulla|lascia (?:stare|perdere)|niente|lascia|no grazie|non importa|stop|basta)[\s.!]*$/i;
+
+const ANSWER_FILLERS = /\b(?:no|s[iì]|ma|invece|meglio|piuttosto|intendevo|volevo dire|cioè|allora|ok|di|del|della|alle|il|la)\b/gi;
+
+/** Applica la risposta dell'utente alla proposta in sospeso (solo regole, senza IA). */
+export function applyAnswer(proposal: VoiceResult, answer: string, now: Now, open: OpenReminder[]): VoiceResult {
+  const norm = normalizeText(answer).trim();
+  if (YES_RE.test(norm)) return { ...proposal, question: null };
+  if (NO_RE.test(norm)) return { ...emptyResult(), reply: "Ok, lascio stare." };
+
+  const body = norm.replace(/^(?:no|s[iì])[,.!]?\s+(?:ma\s+)?/i, "");
+  const a = extract(body, now);
+  const leftover = tokens(a.title.replace(ANSWER_FILLERS, " ")).filter((t) => !/^(matti|serat|sera|pomer|notte|prima|dopo|ora|orari)/.test(t));
+
+  // Ha rispiegato tutto: interpreto la nuova frase da zero
+  if (leftover.length || !proposal.create.length) {
+    const fresh = interpret(body, now, open);
+    return { ...fresh, question: null };
+  }
+
+  // Correzione di data/ora sui promemoria proposti
+  const create = proposal.create.map((r) => {
+    let time = r.due_time;
+    let date = r.due_date;
+    if (a.time) time = a.time;
+    else if (a.period && time) {
+      const h = Number(time.slice(0, 2));
+      if ((a.period === PERIODS.sera || a.period === PERIODS.pomeriggio || a.period === PERIODS.notte) && h < 12) time = `${pad(h + 12)}${time.slice(2)}`;
+      if (a.period === PERIODS.mattina && h >= 12) time = `${pad(h - 12)}${time.slice(2)}`;
+    }
+    if (a.date) date = a.date;
+    const rebuilt = buildReminder(
+      {
+        ...a,
+        title: r.title,
+        date,
+        time,
+        period: time ? null : a.period,
+        deadline: r.kind === "scadenza",
+        recurrence: a.recurrence !== "nessuna" ? a.recurrence : r.recurrence,
+        priority: a.priority === "alta" ? "alta" : r.priority,
+        place: a.place ?? r.place_query,
+        explicitDate: true,
+        notes: r.notes,
+      },
+      now,
+      { date: null },
+    );
+    return rebuilt ? { ...rebuilt, category: r.category } : r;
+  });
+  return { ...proposal, create, question: null, reply: describeCreated(create, now) };
+}
+
+/** Frase di conferma costruita dalle azioni (più affidabile del testo generato dall'IA). */
+export function describeResult(r: VoiceResult, open: OpenReminder[], now: Now): string {
+  const byId = new Map(open.map((o) => [o.id, o]));
+  const parts: string[] = [];
+  if (r.create.length) parts.push(describeCreated(r.create, now));
+  for (const u of r.update) {
+    const o = byId.get(u.id);
+    if (!o) continue;
+    const merged = {
+      due_date: u.due_date !== undefined ? u.due_date : o.due_date,
+      due_time: u.due_time !== undefined ? u.due_time : o.due_time,
+      remind_at: u.remind_at !== undefined ? u.remind_at : o.remind_at,
+      recurrence: u.recurrence ?? o.recurrence,
+      kind: o.kind ?? "cosa_da_fare",
+    };
+    const title = u.title ?? o.title;
+    const when = u.due_date !== undefined || u.due_time !== undefined || u.remind_at !== undefined || u.recurrence ? describeWhen(merged, now) : "";
+    parts.push(when ? `Ho spostato ${title} ${when}.` : `Ho aggiornato: ${title}.`);
+  }
+  const titles = (ids: string[]) => joinList(ids.map((id) => `"${byId.get(id)?.title ?? "?"}"`));
+  if (r.complete_ids.length) parts.push(`Ho segnato come fatto: ${titles(r.complete_ids)}.`);
+  if (r.delete_ids.length) parts.push(`Ho eliminato: ${titles(r.delete_ids)}.`);
+  return parts.join(" ") || r.reply || "Non ho capito, puoi ripetere?";
+}
+
+/** È una domanda sulla lista ("cosa devo fare oggi?"): la gestiscono sempre le regole. */
+export function isQuery(text: string): boolean {
+  const norm = normalizeText(text).trim();
+  return QUERY_RE.test(norm) || (/\?\s*$/.test(norm) && /\b(cosa|che|quali|quando|ho)\b/i.test(norm));
 }

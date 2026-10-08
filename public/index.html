@@ -47,6 +47,7 @@
     <div id="reply" class="reply" hidden>
       <p id="reply-heard" class="heard"></p>
       <p id="reply-text"></p>
+      <button id="reply-cancel" class="link-btn small" hidden>Lascia stare</button>
     </div>
 
     <main id="list" aria-live="polite"></main>
@@ -97,6 +98,59 @@
 
       <div class="row spaced">
         <button type="button" id="logout-btn" class="danger">Esci</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Modifica promemoria -->
+  <dialog id="editor">
+    <form id="editor-form" class="sheet">
+      <header class="sheet-head">
+        <button type="button" class="link-btn" id="editor-cancel">Annulla</button>
+        <h2>Modifica</h2>
+        <button type="submit" class="link-btn strong">Salva</button>
+      </header>
+      <label class="field">Titolo<input name="title" type="text" required autocomplete="off" /></label>
+      <label class="field">Note<textarea name="notes" rows="2" placeholder="Dettagli, indirizzo, cosa portare…"></textarea></label>
+      <div class="grid2">
+        <label class="field">Giorno<input name="due_date" type="date" /></label>
+        <label class="field">Ora<input name="due_time" type="time" /></label>
+      </div>
+      <label class="field">Avvisami
+        <select name="remind">
+          <option value="keep">Come ora</option>
+          <option value="auto">Automatico</option>
+          <option value="0">All'ora indicata</option>
+          <option value="15">15 minuti prima</option>
+          <option value="30">30 minuti prima</option>
+          <option value="60">1 ora prima</option>
+          <option value="120">2 ore prima</option>
+          <option value="daybefore">Il giorno prima alle 9</option>
+          <option value="none">Nessun avviso</option>
+        </select>
+      </label>
+      <div class="grid2">
+        <label class="field">Ripeti
+          <select name="recurrence">
+            <option value="nessuna">Mai</option>
+            <option value="giornaliera">Ogni giorno</option>
+            <option value="feriali">Giorni feriali</option>
+            <option value="settimanale">Ogni settimana</option>
+            <option value="mensile">Ogni mese</option>
+          </select>
+        </label>
+        <label class="field">Priorità
+          <select name="priority">
+            <option value="bassa">Bassa</option>
+            <option value="normale">Normale</option>
+            <option value="alta">Alta</option>
+          </select>
+        </label>
+      </div>
+      <label class="field">Luogo<input name="place_query" type="text" placeholder="es. farmacia, via Roma 10 Milano" autocomplete="off" /></label>
+      <p id="editor-source" class="hint"></p>
+      <div class="row spaced">
+        <button type="button" id="editor-delete" class="danger">Elimina promemoria</button>
       </div>
     </form>
   </dialog>

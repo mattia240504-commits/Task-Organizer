@@ -4,14 +4,17 @@ Detti i promemoria come faresti con Siri: **"Ehi Siri, nota promemoria"** → *"
 
 L'app capisce la frase, la divide in promemoria separati, li riscrive in modo pulito, calcola date e orari e, se devi andare da qualche parte, trova il posto sulla mappa e ti dice **quanto è distante** da dove sei. Siri ti legge la conferma ad alta voce.
 
-**È tutto gratuito.** Non serve nessuna carta di credito e nessuna intelligenza artificiale a pagamento: le frasi vengono interpretate da regole scritte apposta per l'italiano (`src/parser.ts`), e i dati restano nel tuo account Cloudflare gratuito.
+**È tutto gratuito, senza carta di credito.** Le frasi vengono capite dall'IA gratuita inclusa in Cloudflare (Workers AI, modello open source Llama). Se l'IA non è disponibile, o se finisce il limite gratuito giornaliero (circa un centinaio di frasi al giorno), entra in gioco automaticamente un interprete a regole scritto apposta per l'italiano (`src/parser.ts`). Senza carta Cloudflare non può addebitarti nulla: al massimo, oltre il limite, l'IA si ferma fino al giorno dopo.
+
+**Se non è sicura, Siri ti chiede.** Esempi: *"Palestra alle 7: di mattina o di sera?"*, *"Intendi «Fare la spesa»?"*, *"Ho capito «Blabla», senza data: va bene o vuoi rispiegarmelo?"*. Rispondi *"sì"*, *"no"*, *"di sera"*, *"no, alle 11"* oppure ripeti la frase in un altro modo.
 
 Poi ritrovi tutto nella **web app Promemoria** sulla schermata Home, dove puoi:
 
 - vedere la lista divisa in *In ritardo / Oggi / Domani / Prossimi 7 giorni / Più avanti / Senza data*;
 - vedere la distanza aggiornata di ogni luogo da dove ti trovi e aprire le indicazioni in Mappe;
 - ricevere una **notifica** all'ora di ogni promemoria e un **riepilogo ogni mattina**;
-- segnare le cose come fatte, eliminarle o scriverne di nuove (anche con il microfono 🎤).
+- segnare le cose come fatte, eliminarle o scriverne di nuove (anche con il microfono 🎤);
+- **toccare un promemoria per modificarlo**: titolo, note, giorno, ora, quando avvisarti, ripetizione, priorità e luogo.
 
 Cosa puoi dire:
 
@@ -27,11 +30,15 @@ Cosa puoi dire:
 | "Dopodomani ritirare la giacca in lavanderia, è urgente" | Priorità alta e lavanderia più vicina |
 | "Ho comprato il latte" / "Ho fatto la spesa e ho chiamato la mamma" | Segna come fatti i promemoria corrispondenti |
 | "Cancella chiamare la mamma" | Elimina il promemoria |
+| "Sposta il dentista a giovedì alle 11" | Cambia data e ora (e ricalcola l'avviso) |
+| "Rimanda la spesa a domani" / "Anticipa il dentista di un'ora" | Sposta il promemoria |
+| "Rinomina la spesa in spesa all'Esselunga" | Cambia il titolo |
+| "Annulla l'ultimo" | Toglie l'ultimo promemoria aggiunto |
 | "Cosa devo fare oggi?" / "Che impegni ho domani?" | Siri ti legge l'elenco |
 
 Riconosce oggi, domani, dopodomani, stasera, i giorni della settimana, date come "il 20", "25 dicembre" o "15/11", "tra N minuti/ore/giorni", "fine mese", "settimana prossima"; orari come "alle 10", "alle 3 e mezza" o "alle 7 meno un quarto"; ripetizioni come "ogni giorno", "ogni lunedì", "nei giorni feriali" o "il 5 di ogni mese"; e luoghi come farmacia, posta, banca, supermercato, medico, indirizzi tipo "via…", "piazza…" o "corso…".
 
-Funziona meglio con frasi dirette ("cosa + quando"). Non essendoci un'IA, una frase molto contorta può finire in un titolo poco elegante: in quel caso lo correggi dall'app.
+Se qualcosa viene capito male, puoi correggerlo a voce ("sposta…", "rinomina…") oppure toccandolo nell'app.
 
 ---
 
@@ -41,7 +48,7 @@ Funziona meglio con frasi dirette ("cosa + quando"). Non essendoci un'IA, una fr
 iPhone ── "Ehi Siri, nota promemoria" ──► Comando rapido
               (testo dettato + posizione)          │
                                                    ▼
-                    Server su Cloudflare (gratis) ──► interprete delle frasi (regole italiane)
+                    Server su Cloudflare (gratis) ──► IA gratuita Workers AI (regole italiane di riserva)
                          │   database D1          ──► OpenStreetMap (luogo e distanza)
                          │
                          ├──► risposta letta da Siri
@@ -77,7 +84,7 @@ Installa **Node.js** (versione "LTS") da https://nodejs.org e **Git** da https:/
 npx wrangler d1 create promemoria
 ```
 
-Il comando stampa un `database_id`: copialo in `wrangler.toml` al posto di `SOSTITUISCI_CON_ID_DATABASE`. Poi crea le tabelle:
+Il comando stampa un `database_id`: copialo in `wrangler.toml` alla voce `database_id` (al posto di quello che c'è). Poi crea le tabelle:
 
 ```bash
 npm run db:init
@@ -107,7 +114,24 @@ npx wrangler secret put VAPID_PRIVATE_KEY    # il valore stampato da npm run vap
 npm run deploy
 ```
 
-Alla fine vedrai un indirizzo del tipo `https://promemoria.TUONOME.workers.dev`. È il tuo server.
+Alla fine vedrai un indirizzo del tipo `https://promemoria.TUONOME.workers.dev`. È il tuo server. Il comando applica anche eventuali nuove tabelle del database.
+
+Se la prima volta ti chiede di registrare un sottodominio `workers.dev`, sceglilo dal sito di Cloudflare (Workers & Pages) e ripeti `npm run deploy`.
+
+#### Aggiornamenti automatici (consigliato)
+
+Così ogni modifica pubblicata su GitHub va online da sola, senza Terminale:
+
+1. Su https://dash.cloudflare.com apri **Workers & Pages → promemoria → Settings → Build** (o "Builds").
+2. **Connect** → **GitHub** → autorizza l'app Cloudflare sul repository `Task-Organizer`.
+3. Imposta:
+   - **Branch**: quello del progetto (es. `claude/voice-reminder-app-qh2llf`);
+   - **Build command**: lascia vuoto;
+   - **Deploy command**: `npm run deploy`;
+   - **Root directory**: `/`.
+4. **Save / Connect**. Parte subito una pubblicazione: la vedi nella scheda **Deployments**.
+
+I segreti (`APP_TOKEN`, chiavi VAPID) restano quelli già impostati.
 
 ### 6. La web app sull'iPhone
 
@@ -127,19 +151,31 @@ Apri l'app **Comandi** sull'iPhone → **+** (nuovo comando) e aggiungi queste a
    - Interrompi l'ascolto: *Dopo una pausa*
 2. **Ottieni posizione attuale**
 3. **Ottieni contenuti dell'URL**
-   - URL: `https://promemoria.TUONOME.workers.dev/api/voice`
+   - URL: `https://promemoria.TUONOME.workers.dev/api/voice?token=IL_TUO_APP_TOKEN`
+     (scrivi a mano `?token=` e poi incolla il token: controlla che non vada a capo)
    - Tocca **Mostra di più**:
      - Metodo: **POST**
-     - Intestazioni: aggiungi `Authorization` con valore `Bearer IL_TUO_APP_TOKEN`
-       (la parola *Bearer*, uno spazio, poi il token)
      - Corpo della richiesta: **JSON**, con tre campi:
        - `text` (Testo) → variabile **Testo dettato**
        - `lat` (Testo) → variabile **Posizione attuale**, poi toccala e scegli **Latitudine**
        - `lon` (Testo) → variabile **Posizione attuale**, poi toccala e scegli **Longitudine**
 4. **Ottieni valore dizionario**
    - Ottieni **Valore** per la chiave `reply` in **Contenuti dell'URL**
-5. **Pronuncia testo** → **Valore dizionario**
-   (in alternativa **Mostra risultato**, se preferisci leggere invece di ascoltare)
+5. **Leggi testo** (su alcune versioni di iOS si chiama *Pronuncia testo*) → **Valore dizionario**
+   (in alternativa **Mostra risultato**: con "Ehi Siri" viene letto ad alta voce lo stesso)
+
+**Per far rispondere alle domande di Siri** (consigliato), aggiungi in fondo:
+
+6. **Ottieni valore dizionario** → chiave `ask` in **Contenuti dell'URL**
+7. **Se** → *Valore dizionario* **è** `si`. Dentro il blocco "Se":
+   1. **Detta testo** (Italiano, dopo una pausa)
+   2. **Ottieni contenuti dell'URL**: stesso URL con `?token=…`, metodo **POST**, corpo **JSON** con due campi:
+      - `text` → il **Testo dettato** appena aggiunto (il secondo)
+      - `answer` → scrivi semplicemente `si`
+   3. **Ottieni valore dizionario** → chiave `reply` in questi nuovi **Contenuti dell'URL**
+   4. **Leggi testo** → questo nuovo **Valore dizionario**
+
+   Il blocco "Altrimenti" lascialo vuoto.
 
 Chiama il comando **"Nota promemoria"** (tocca il nome in alto). Da ora basta dire:
 
@@ -168,7 +204,8 @@ npm run typecheck
 | File | Cosa fa |
 |---|---|
 | `src/index.ts` | API (`/api/voice`, `/api/reminders`, notifiche) e controllo periodico delle scadenze |
-| `src/parser.ts` | Interprete delle frasi in italiano (date, orari, ricorrenze, luoghi, elenchi, domande) |
+| `src/ai.ts` | Interpretazione con l'IA gratuita di Cloudflare (Workers AI), con validazione della risposta |
+| `src/parser.ts` | Interprete a regole per l'italiano (date, orari, ricorrenze, luoghi, elenchi, modifiche, domande): riserva quando l'IA non c'è |
 | `src/geo.ts` | Ricerca dei luoghi (OpenStreetMap) e calcolo di distanza e tempi (OSRM) |
 | `src/push.ts` | Notifiche Web Push cifrate (VAPID + aes128gcm), senza dipendenze |
 | `src/time.ts` | Fusi orari e ricorrenze |
@@ -179,12 +216,14 @@ npm run typecheck
 
 Tutte le chiamate richiedono `Authorization: Bearer APP_TOKEN` (oppure `?token=`).
 
-- `POST /api/voice` `{ text, lat?, lon?, timezone? }` → `{ reply, created, completed, deleted }`
+- `POST /api/voice` `{ text, lat?, lon?, timezone?, answer?, pending_id? }` → `{ reply, ask: "si"|"no", pending_id, created, updated, completed, deleted }`
+  - se `ask` è `"si"`, `reply` contiene una domanda: la frase successiva va inviata con `answer: "si"` (o con il `pending_id`).
 - `GET /api/reminders` (aperti) · `GET /api/reminders?done=1` (completati)
-- `PATCH /api/reminders/:id` `{ done?, title?, notes?, remind_at? }` · `DELETE /api/reminders/:id`
+- `PATCH /api/reminders/:id` `{ done?, title?, notes?, due_date?, due_time?, recurrence?, priority?, place_query?, remind? }` · `DELETE /api/reminders/:id`
+  - `remind`: `auto`, `0`, `15`, `30`, `60`, `120` (minuti prima), `daybefore`, `none`
 - `POST /api/subscribe` · `POST /api/unsubscribe` · `POST /api/test-push`
 - `GET|POST /api/settings` `{ timezone?, digest_time? ("HH:MM" oppure "off") }`
 
 ## Privacy
 
-I promemoria stanno nel **tuo** database Cloudflare. Il testo dettato viene interpretato dal tuo server e non è inviato a nessun servizio di intelligenza artificiale. Le ricerche dei luoghi passano da OpenStreetMap con le coordinate approssimative della tua zona.
+I promemoria stanno nel **tuo** database Cloudflare. Il testo dettato viene interpretato dal tuo server con l'IA di Cloudflare, nel tuo stesso account: non va a servizi esterni. Le ricerche dei luoghi passano da OpenStreetMap con le coordinate approssimative della tua zona.

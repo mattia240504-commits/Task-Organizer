@@ -122,6 +122,10 @@ function itemEl(r, { done = false } = {}) {
   } else place.removeAttribute("href");
 
   el.querySelector(".check-btn").addEventListener("click", () => toggleDone(r, el, done));
+  el.querySelector(".body").addEventListener("click", (ev) => {
+    if (ev.target.closest("a")) return; // il link del luogo apre Mappe
+    openEditor(r);
+  });
   el.querySelector(".del-btn").addEventListener("click", () => remove(r, el));
   return el;
 }
@@ -205,6 +209,15 @@ function showBanner(html) {
 }
 
 // ---------- Inserimento vocale / testo ----------
+let awaitingAnswer = false; // Siri/l'app ha fatto una domanda: la prossima frase è la risposta
+
+function setAwaiting(on) {
+  awaitingAnswer = on;
+  $("#reply").classList.toggle("asking", on);
+  $("#reply-cancel").hidden = !on;
+  $("#compose-input").placeholder = on ? "Rispondi… (es. «sì», «di sera», «no, alle 11»)" : "Es. domani alle 10 dentista, poi passare in farmacia";
+}
+
 async function send(text) {
   text = text.trim();
   if (!text) return;
@@ -217,13 +230,16 @@ async function send(text) {
   try {
     const data = await api("/api/voice", {
       method: "POST",
-      body: JSON.stringify({ text, timezone, ...(here || {}) }),
+      body: JSON.stringify({ text, timezone, ...(here || {}), ...(awaitingAnswer ? { answer: "si" } : {}) }),
     });
     $("#reply-text").textContent = data.reply;
+    setAwaiting(data.ask === "si");
     speak(data.reply);
+    if (data.ask === "si") $("#compose-input").focus();
     await load();
   } catch (e) {
     $("#reply-text").textContent = `Errore: ${e.message}`;
+    setAwaiting(false);
   } finally {
     reply.classList.remove("loading");
   }
@@ -343,6 +359,77 @@ async function togglePush() {
   return refreshPushUI();
 }
 
+// ---------- Modifica di un promemoria ----------
+let editing = null;
+
+function remindModeOf(r) {
+  if (!r.remind_at) return "none";
+  if (!r.due_date) return "custom";
+  const due = `${r.due_date}T${r.due_time || "09:00"}`;
+  const diff = Math.round((Date.parse(`${due}:00Z`) - Date.parse(`${r.remind_at}:00Z`)) / 60000);
+  if (r.remind_at === `${addDays(r.due_date, -1)}T09:00`) return "daybefore";
+  if (["0", "15", "30", "60", "120"].includes(String(diff))) return String(diff);
+  return "custom";
+}
+
+function openEditor(r) {
+  editing = r;
+  const f = $("#editor-form");
+  f.title.value = r.title;
+  f.notes.value = r.notes || "";
+  f.due_date.value = r.due_date || "";
+  f.due_time.value = r.due_time || "";
+  f.recurrence.value = r.recurrence || "nessuna";
+  f.priority.value = r.priority || "normale";
+  f.place_query.value = r.place_query || "";
+  const mode = remindModeOf(r);
+  f.remind.value = mode === "custom" ? "keep" : mode;
+  f.querySelector('option[value="keep"]').hidden = mode !== "custom";
+  f.querySelector('option[value="keep"]').textContent = mode === "custom" && r.remind_at ? `Come ora (${r.remind_at.replace("T", " ")})` : "Come ora";
+  $("#editor-source").textContent = r.source_text ? `Hai detto: “${r.source_text}”` : "";
+  $("#editor").showModal();
+}
+
+async function saveEditor(ev) {
+  ev.preventDefault();
+  const f = $("#editor-form");
+  const r = editing;
+  const changes = {};
+  for (const k of ["title", "notes", "due_date", "due_time", "recurrence", "priority", "place_query"]) {
+    const v = f[k].value.trim();
+    if (v !== (r[k] || "")) changes[k] = v || null;
+  }
+  if (!f.title.value.trim()) return f.title.focus();
+  if (f.remind.value !== "keep" && (f.remind.value !== remindModeOf(r) || "due_date" in changes || "due_time" in changes)) {
+    changes.remind = f.remind.value;
+  }
+  if (changes.recurrence && changes.recurrence !== "nessuna" && !f.due_date.value) {
+    alert("Per ripeterlo serve una data di partenza.");
+    return;
+  }
+  $("#editor").close();
+  if (!Object.keys(changes).length) return;
+  try {
+    await api(`/api/reminders/${r.id}`, { method: "PATCH", body: JSON.stringify({ ...changes, ...(here || {}) }) });
+    await load();
+  } catch (e) {
+    showBanner(`Non riesco a salvare: ${e.message}`);
+  }
+}
+
+$("#editor-form").addEventListener("submit", saveEditor);
+$("#editor-cancel").addEventListener("click", () => $("#editor").close());
+$("#editor-delete").addEventListener("click", async () => {
+  const r = editing;
+  $("#editor").close();
+  if (!confirm(`Eliminare "${r.title}"?`)) return;
+  await api(`/api/reminders/${r.id}`, { method: "DELETE" }).catch(() => {});
+  load();
+});
+$("#editor-form").due_date.addEventListener("change", (e) => {
+  if (!e.target.value) $("#editor-form").due_time.value = "";
+});
+
 // ---------- Impostazioni ----------
 async function openSettings() {
   const dlg = $("#settings");
@@ -411,6 +498,12 @@ $("#compose-form").addEventListener("submit", (e) => {
   send($("#compose-input").value);
 });
 $("#mic-btn").addEventListener("click", startListening);
+$("#reply-cancel").addEventListener("click", async () => {
+  if (!awaitingAnswer) return;
+  await api("/api/voice", { method: "POST", body: JSON.stringify({ text: "annulla", answer: "si" }) }).catch(() => {});
+  $("#reply-text").textContent = "Ok, lascio stare.";
+  setAwaiting(false);
+});
 $("#settings-btn").addEventListener("click", openSettings);
 $("#push-btn").addEventListener("click", () => togglePush().catch((e) => alert(e.message)));
 $("#push-test").addEventListener("click", () => api("/api/test-push", { method: "POST" }).catch((e) => alert(e.message)));

@@ -14,8 +14,12 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "promemoria"
-database_id = "SOSTITUISCI_CON_ID_DATABASE"
+database_id = "d56c71a4-0d48-4ea8-aeca-9f39321e9147"
 migrations_dir = "migrations"
+
+# IA gratuita di Cloudflare (Workers AI): se non disponibile si usano le regole
+[ai]
+binding = "AI"
 
 [triggers]
 # Ogni minuto controlla i promemoria da notificare

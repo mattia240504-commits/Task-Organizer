@@ -1,6 +1,19 @@
 // Server dei promemoria vocali: API per Siri/Comandi rapidi e per la web app, più il controllo
 // periodico (cron) che invia le notifiche.
-import { interpret, type NewReminder, type OpenReminder } from "./parser";
+import { aiInterpret } from "./ai";
+import {
+  addDays,
+  applyAnswer,
+  describeResult,
+  interpret,
+  isQuery,
+  NO_RE,
+  YES_RE,
+  type NewReminder,
+  type OpenReminder,
+  type ReminderUpdate,
+  type VoiceResult,
+} from "./parser";
 import { describeRoute, geocode, route, type LatLon } from "./geo";
 import { sendPush, type PushMessage, type VapidKeys } from "./push";
 import { describeNow, localToUtc, nextOccurrence, nextOccurrenceAfter, type Recurrence } from "./time";
@@ -8,6 +21,7 @@ import { describeNow, localToUtc, nextOccurrence, nextOccurrenceAfter, type Recu
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  AI?: Ai;
   APP_TOKEN: string;
   TIMEZONE: string;
   VAPID_PUBLIC_KEY?: string;
@@ -102,122 +116,288 @@ async function openReminders(env: Env): Promise<ReminderRow[]> {
   return results;
 }
 
+interface Pending {
+  id: string;
+  text: string;
+  question: string;
+  result: string;
+  created_at: number;
+}
+
+const PENDING_TTL = 15 * 60 * 1000;
+
+async function savePending(env: Env, text: string, question: string, result: VoiceResult): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM pending"),
+    env.DB.prepare("INSERT INTO pending (id, text, question, result, created_at) VALUES (?, ?, ?, ?, ?)").bind(
+      id,
+      text,
+      question,
+      JSON.stringify(result),
+      Date.now(),
+    ),
+  ]);
+  return id;
+}
+
+/** Recupera (e consuma) la domanda in sospeso: quella indicata, o l'ultima fatta. */
+async function takePending(env: Env, id?: string): Promise<(Pending & { proposal: VoiceResult }) | null> {
+  const row = id
+    ? await env.DB.prepare("SELECT * FROM pending WHERE id = ?").bind(id).first<Pending>()
+    : await env.DB.prepare("SELECT * FROM pending ORDER BY created_at DESC LIMIT 1").first<Pending>();
+  await env.DB.prepare("DELETE FROM pending").run();
+  if (!row || Date.now() - row.created_at > PENDING_TTL) return null;
+  return { ...row, proposal: JSON.parse(row.result) as VoiceResult };
+}
+
+function parseHere(body: { lat?: unknown; lon?: unknown }): LatLon | undefined {
+  // Accetta numeri, "45,47" e anche testo con il numero dentro
+  const num = (v: unknown) => {
+    const m = /-?\d+(?:[.,]\d+)?/.exec(String(v ?? ""));
+    return m ? Number(m[0].replace(",", ".")) : NaN;
+  };
+  const lat = num(body.lat);
+  const lon = num(body.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+    ? { lat, lon }
+    : undefined;
+}
+
+const toOpen = (r: ReminderRow): OpenReminder => ({
+  id: r.id,
+  title: r.title,
+  due_date: r.due_date,
+  due_time: r.due_time,
+  remind_at: r.remind_at,
+  recurrence: r.recurrence,
+  place_name: r.place_name,
+  kind: r.kind,
+  created_at: r.created_at,
+});
+
+function addMinutesLocal(local: string, mins: number): string {
+  const d = new Date(`${local}:00Z`);
+  d.setUTCMinutes(d.getUTCMinutes() + mins);
+  return d.toISOString().slice(0, 16);
+}
+
+export type RemindMode = "auto" | "none" | "daybefore" | "0" | "15" | "30" | "60" | "120";
+
+/** Quando avvisare, dato l'evento: usato dalle modifiche nell'app e quando l'ora cambia. */
+export function computeRemind(
+  r: { kind: string; due_date: string | null; due_time: string | null; place: boolean },
+  mode: RemindMode = "auto",
+): string | null {
+  if (mode === "none" || !r.due_date) return null;
+  if (mode === "daybefore") return `${addDays(r.due_date, -1)}T09:00`;
+  if (!r.due_time) return `${r.due_date}T09:00`;
+  const at = `${r.due_date}T${r.due_time}`;
+  if (mode !== "auto") return addMinutesLocal(at, -Number(mode));
+  if (r.kind === "scadenza") return `${addDays(r.due_date, -1)}T09:00`;
+  if (r.kind === "appuntamento" || r.place) return addMinutesLocal(at, r.place ? -60 : -30);
+  return at;
+}
+
+async function findPlace(row: Pick<ReminderRow, "place_query">, here?: LatLon) {
+  const empty = { place_name: null, place_address: null, place_lat: null, place_lon: null, distance_m: null, drive_min: null, walk_min: null };
+  if (!row.place_query) return { ...empty, note: null as string | null };
+  try {
+    const place = await geocode(row.place_query, here);
+    if (!place) return { ...empty, note: null };
+    const base = { ...empty, place_name: place.name, place_address: place.address, place_lat: place.lat, place_lon: place.lon };
+    if (!here) return { ...base, note: null };
+    const rt = await route(here, place);
+    return { ...base, distance_m: rt.distance_m, drive_min: rt.drive_min, walk_min: rt.walk_min, note: `${place.name} è ${describeRoute(rt)}` };
+  } catch (e) {
+    console.error("Geocodifica fallita", e);
+    return { ...empty, note: null };
+  }
+}
+
+async function insertReminder(env: Env, r: NewReminder, tz: string, here: LatLon | undefined, sourceText: string) {
+  const row: ReminderRow = {
+    id: crypto.randomUUID(),
+    title: r.title.trim(),
+    notes: r.notes?.trim() || null,
+    category: r.category,
+    priority: r.priority,
+    kind: r.kind,
+    ...normalize(r, tz),
+    notified: 0,
+    done: 0,
+    done_at: null,
+    place_query: r.place_query?.trim() || null,
+    place_name: null,
+    place_address: null,
+    place_lat: null,
+    place_lon: null,
+    distance_m: null,
+    drive_min: null,
+    walk_min: null,
+    source_text: sourceText,
+    created_at: Date.now(),
+  };
+  const { note, ...place } = await findPlace(row, here);
+  Object.assign(row, place);
+  await env.DB.prepare(
+    `INSERT INTO reminders (id, title, notes, category, priority, kind, due_date, due_time, remind_at, remind_at_utc,
+      recurrence, notified, done, done_at, place_query, place_name, place_address, place_lat, place_lon,
+      distance_m, drive_min, walk_min, source_text, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      row.id, row.title, row.notes, row.category, row.priority, row.kind, row.due_date, row.due_time, row.remind_at,
+      row.remind_at_utc, row.recurrence, row.notified, row.done, row.done_at, row.place_query, row.place_name,
+      row.place_address, row.place_lat, row.place_lon, row.distance_m, row.drive_min, row.walk_min, row.source_text,
+      row.created_at,
+    )
+    .run();
+  return { row, note };
+}
+
+export interface ReminderChanges extends Omit<ReminderUpdate, "id"> {
+  priority?: string;
+  category?: string;
+  remind?: RemindMode;
+}
+
+/** Applica una modifica (dalla voce o dall'app) ricalcolando avviso, notifiche e luogo. */
+async function updateReminder(env: Env, existing: ReminderRow, c: ReminderChanges, tz: string, here?: LatLon) {
+  const next = { ...existing };
+  if (typeof c.title === "string" && c.title.trim()) next.title = c.title.trim();
+  if (c.notes !== undefined) next.notes = c.notes?.trim() || null;
+  if (c.priority && ["bassa", "normale", "alta"].includes(c.priority)) next.priority = c.priority;
+  if (c.category) next.category = c.category;
+  if (c.recurrence) next.recurrence = c.recurrence;
+
+  const dateChanged = c.due_date !== undefined || c.due_time !== undefined;
+  if (c.due_date !== undefined) next.due_date = c.due_date && DATE_RE.test(c.due_date) ? c.due_date : null;
+  if (c.due_time !== undefined) next.due_time = next.due_date && c.due_time && TIME_RE.test(c.due_time) ? c.due_time : null;
+  if (!next.due_date) next.due_time = null;
+
+  let placeNote: string | null = null;
+  if (c.place_query !== undefined && (c.place_query?.trim() || null) !== existing.place_query) {
+    next.place_query = c.place_query?.trim() || null;
+    const { note, ...place } = await findPlace(next, here);
+    Object.assign(next, place);
+    placeNote = note;
+  }
+
+  if (c.remind_at !== undefined) {
+    next.remind_at = c.remind_at && LOCAL_RE.test(c.remind_at) ? c.remind_at : null;
+  } else if (dateChanged || c.remind) {
+    next.remind_at = computeRemind({ kind: next.kind, due_date: next.due_date, due_time: next.due_time, place: !!next.place_lat }, c.remind);
+  }
+  if (next.remind_at !== existing.remind_at) {
+    next.remind_at_utc = next.remind_at ? localToUtc(next.remind_at, tz) : null;
+    next.notified = 0;
+  }
+  if (!next.remind_at) next.recurrence = "nessuna";
+
+  await env.DB.prepare(
+    `UPDATE reminders SET title = ?, notes = ?, priority = ?, category = ?, kind = ?, due_date = ?, due_time = ?, remind_at = ?,
+      remind_at_utc = ?, recurrence = ?, notified = ?, place_query = ?, place_name = ?, place_address = ?, place_lat = ?,
+      place_lon = ?, distance_m = ?, drive_min = ?, walk_min = ? WHERE id = ?`,
+  )
+    .bind(
+      next.title, next.notes, next.priority, next.category, next.kind, next.due_date, next.due_time, next.remind_at,
+      next.remind_at_utc, next.recurrence, next.notified, next.place_query, next.place_name, next.place_address,
+      next.place_lat, next.place_lon, next.distance_m, next.drive_min, next.walk_min, existing.id,
+    )
+    .run();
+  return { row: next, note: placeNote };
+}
+
 async function handleVoice(req: Request, env: Env): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as {
     text?: string;
-    lat?: number | string;
-    lon?: number | string;
+    lat?: unknown;
+    lon?: unknown;
     timezone?: string;
+    answer?: unknown;
+    pending_id?: string;
   };
   const text = (body.text ?? "").toString().trim();
-  if (!text) return json({ reply: "Non ho sentito nulla. Riprova." }, 400);
+  if (!text) return json({ reply: "Non ho sentito nulla. Riprova.", ask: "no", needs_answer: false, pending_id: "" }, 400);
 
   if (validTimezone(body.timezone)) await setSetting(env, "timezone", body.timezone);
   const tz = await timezone(env);
-  const lat = Number(String(body.lat ?? "").replace(",", "."));
-  const lon = Number(String(body.lon ?? "").replace(",", "."));
-  const here: LatLon | undefined =
-    body.lat != null && body.lon != null && Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)
-      ? { lat, lon }
-      : undefined;
+  const here = parseHere(body);
+  const now = describeNow(Date.now(), tz);
+  const openRows = await openReminders(env);
+  const open = openRows.map(toOpen);
 
-  const open = await openReminders(env);
-  const result = interpret(
-    text,
-    describeNow(Date.now(), tz),
-    open.map(
-      (r): OpenReminder => ({
-        id: r.id,
-        title: r.title,
-        due_date: r.due_date,
-        due_time: r.due_time,
-        remind_at: r.remind_at,
-        recurrence: r.recurrence,
-        place_name: r.place_name,
-      }),
-    ),
-  );
+  let result: VoiceResult | null = null;
+  let engine = "regole";
 
-  const openIds = new Set(open.map((r) => r.id));
-  const created: ReminderRow[] = [];
-  const distanceNotes: string[] = [];
-
-  for (const r of result.create) {
-    const n = normalize(r, tz);
-    const row: ReminderRow = {
-      id: crypto.randomUUID(),
-      title: r.title.trim(),
-      notes: r.notes?.trim() || null,
-      category: r.category,
-      priority: r.priority,
-      kind: r.kind,
-      ...n,
-      notified: 0,
-      done: 0,
-      done_at: null,
-      place_query: r.place_query?.trim() || null,
-      place_name: null,
-      place_address: null,
-      place_lat: null,
-      place_lon: null,
-      distance_m: null,
-      drive_min: null,
-      walk_min: null,
-      source_text: text,
-      created_at: Date.now(),
-    };
-
-    if (row.place_query) {
-      try {
-        const place = await geocode(row.place_query, here);
-        if (place) {
-          row.place_name = place.name;
-          row.place_address = place.address;
-          row.place_lat = place.lat;
-          row.place_lon = place.lon;
-          if (here) {
-            const rt = await route(here, place);
-            row.distance_m = rt.distance_m;
-            row.drive_min = rt.drive_min;
-            row.walk_min = rt.walk_min;
-            distanceNotes.push(`${place.name} è ${describeRoute(rt)}`);
-          }
-        }
-      } catch (e) {
-        console.error("Geocodifica fallita", e);
+  // Risposta a una domanda fatta prima
+  const isAnswer = !!body.pending_id || (body.answer !== undefined && !/^(?:no|false|0|)$/i.test(String(body.answer)));
+  if (isAnswer) {
+    const pending = await takePending(env, body.pending_id || undefined);
+    if (pending) {
+      const answer = text.trim();
+      if (NO_RE.test(answer)) return json({ reply: "Ok, lascio stare.", ask: "no", needs_answer: false, pending_id: "" });
+      if (YES_RE.test(answer)) result = { ...pending.proposal, question: null };
+      else {
+        const ai = await aiInterpret(env.AI, pending.text, now, tz, open, { question: pending.question, answer });
+        if (ai) engine = "ia";
+        result = ai ?? applyAnswer(pending.proposal, answer, now, open);
       }
+      result.question = null;
     }
-
-    await env.DB.prepare(
-      `INSERT INTO reminders (id, title, notes, category, priority, kind, due_date, due_time, remind_at, remind_at_utc,
-        recurrence, notified, done, done_at, place_query, place_name, place_address, place_lat, place_lon,
-        distance_m, drive_min, walk_min, source_text, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-      .bind(
-        row.id, row.title, row.notes, row.category, row.priority, row.kind, row.due_date, row.due_time, row.remind_at,
-        row.remind_at_utc, row.recurrence, row.notified, row.done, row.done_at, row.place_query, row.place_name,
-        row.place_address, row.place_lat, row.place_lon, row.distance_m, row.drive_min, row.walk_min, row.source_text,
-        row.created_at,
-      )
-      .run();
-    created.push(row);
   }
 
+  // Frase nuova: domande sulla lista con le regole, il resto con l'IA (regole come riserva)
+  if (!result) {
+    const rules = interpret(text, now, open);
+    result = rules;
+    if (!isQuery(text)) {
+      const ai = await aiInterpret(env.AI, text, now, tz, open);
+      if (ai && (ai.create.length || ai.update.length || ai.complete_ids.length || ai.delete_ids.length || ai.question)) {
+        result = ai;
+        engine = "ia";
+      }
+    }
+  }
+
+  if (result.question) {
+    const id = await savePending(env, text, result.question, result);
+    return json({ reply: result.question, ask: "si", needs_answer: true, pending_id: id, engine });
+  }
+
+  const byId = new Map(openRows.map((r) => [r.id, r]));
+  const notes: string[] = [];
+  const created: ReminderRow[] = [];
+  for (const r of result.create) {
+    const { row, note } = await insertReminder(env, r, tz, here, text);
+    created.push(row);
+    if (note) notes.push(note);
+  }
+  const updated: ReminderRow[] = [];
+  for (const u of result.update) {
+    const existing = byId.get(u.id);
+    if (!existing) continue;
+    const { id: _id, ...changes } = u;
+    const { row, note } = await updateReminder(env, existing, changes, tz, here);
+    updated.push(row);
+    if (note) notes.push(note);
+  }
   const completed: string[] = [];
-  for (const id of result.complete_ids.filter((id) => openIds.has(id))) {
+  for (const id of result.complete_ids.filter((id) => byId.has(id))) {
     await completeReminder(env, id, tz);
     completed.push(id);
   }
   const deleted: string[] = [];
-  for (const id of result.delete_ids.filter((id) => openIds.has(id))) {
+  for (const id of result.delete_ids.filter((id) => byId.has(id))) {
     await env.DB.prepare("DELETE FROM reminders WHERE id = ?").bind(id).run();
     deleted.push(id);
   }
 
-  let reply = result.reply.trim();
-  if (distanceNotes.length) reply += ` ${distanceNotes.join(". ")}.`;
-  return json({ reply, created, completed, deleted });
+  const acted = created.length + updated.length + completed.length + deleted.length > 0;
+  let reply = acted ? describeResult(result, open, now) : result.reply.trim() || "Non ho capito, puoi ripetere?";
+  if (notes.length) reply += ` ${notes.join(". ")}.`;
+  return json({ reply, ask: "no", needs_answer: false, pending_id: "", engine, created, updated, completed, deleted });
 }
 
 /** Segna come fatto; se è ricorrente lo sposta alla prossima occorrenza. */
@@ -247,7 +427,7 @@ async function advanceRecurring(env: Env, r: ReminderRow, tz: string, after = Da
 }
 
 async function handleUpdate(req: Request, env: Env, id: string): Promise<Response> {
-  const body = (await req.json().catch(() => ({}))) as Partial<ReminderRow> & { done?: boolean };
+  const body = (await req.json().catch(() => ({}))) as ReminderChanges & { done?: boolean; lat?: unknown; lon?: unknown };
   const tz = await timezone(env);
   const existing = await env.DB.prepare("SELECT * FROM reminders WHERE id = ?").bind(id).first<ReminderRow>();
   if (!existing) return json({ error: "Promemoria non trovato" }, 404);
@@ -255,23 +435,12 @@ async function handleUpdate(req: Request, env: Env, id: string): Promise<Respons
   if (body.done === true) return json(await completeReminder(env, id, tz));
   if (body.done === false) {
     await env.DB.prepare("UPDATE reminders SET done = 0, done_at = NULL WHERE id = ?").bind(id).run();
+    existing.done = 0;
   }
-
-  const fields: string[] = [];
-  const values: unknown[] = [];
-  for (const key of ["title", "notes"] as const) {
-    if (typeof body[key] === "string") {
-      fields.push(`${key} = ?`);
-      values.push((body[key] as string).trim() || null);
-    }
-  }
-  if (body.remind_at !== undefined) {
-    const local = body.remind_at && LOCAL_RE.test(body.remind_at) ? body.remind_at : null;
-    fields.push("remind_at = ?", "remind_at_utc = ?", "notified = 0");
-    values.push(local, local ? localToUtc(local, tz) : null);
-  }
-  if (fields.length) {
-    await env.DB.prepare(`UPDATE reminders SET ${fields.join(", ")} WHERE id = ?`).bind(...values, id).run();
+  const { done: _d, lat: _a, lon: _o, ...changes } = body;
+  if (Object.keys(changes).length) {
+    const { row } = await updateReminder(env, existing, changes, tz, parseHere(body));
+    return json(row);
   }
   return json(await env.DB.prepare("SELECT * FROM reminders WHERE id = ?").bind(id).first<ReminderRow>());
 }

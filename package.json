@@ -4,7 +4,7 @@
   "description": "Promemoria vocali con Siri, gratuiti",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler d1 migrations apply promemoria --remote && wrangler deploy",
     "db:init": "wrangler d1 migrations apply promemoria --remote",
     "db:init:local": "wrangler d1 migrations apply promemoria --local",
     "vapid": "node scripts/generate-vapid.mjs",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { interpret, type OpenReminder } from "../src/parser";
+import { applyAnswer, interpret, type OpenReminder } from "../src/parser";
 
 const now = { date: "2026-10-08", time: "12:00" }; // giovedì
 const open: OpenReminder[] = [
@@ -104,5 +104,43 @@ describe("domande, completamenti, eliminazioni", () => {
   it("elimina", () => {
     expect(interpret("cancella chiamare la mamma", now, open).delete_ids).toEqual(["2"]);
     expect(interpret("elimina il dentista", now, open)).toMatchObject({ delete_ids: [], reply: expect.stringContaining("Non ho trovato") });
+  });
+});
+
+describe("modifiche a voce", () => {
+  const list: OpenReminder[] = [
+    { id: "d", title: "Dentista", due_date: "2026-10-09", due_time: "10:00", remind_at: "2026-10-09T09:30", recurrence: "nessuna", place_name: null, kind: "appuntamento", created_at: 5 },
+    ...open.map((o, i) => ({ ...o, created_at: i })),
+  ];
+  it("sposta, rimanda, anticipa", () => {
+    expect(interpret("sposta il dentista a giovedì alle 11", now, list).update).toEqual([
+      { id: "d", due_date: "2026-10-15", due_time: "11:00", remind_at: "2026-10-15T10:30", recurrence: "nessuna" },
+    ]);
+    expect(interpret("rimanda la spesa a domani", now, list).update[0]).toMatchObject({ id: "3", due_date: "2026-10-09" });
+    expect(interpret("anticipa il dentista di un'ora", now, list).update[0]).toMatchObject({ due_time: "09:00" });
+    expect(interpret("sposta il dentista dalle 10 alle 15", now, list).update[0]).toMatchObject({ due_time: "15:00" });
+  });
+  it("rinomina e annulla l'ultimo", () => {
+    expect(interpret("rinomina la spesa in spesa all'Esselunga", now, list).update).toEqual([{ id: "3", title: "Spesa all'Esselunga" }]);
+    expect(interpret("annulla l'ultimo", now, list).delete_ids).toEqual(["d"]);
+  });
+});
+
+describe("domande e risposte", () => {
+  it("chiede se l'ora è ambigua e applica la risposta", () => {
+    const p = interpret("domani alle 7 palestra", now, open);
+    expect(p.question).toBe("Palestra alle 7: di mattina o di sera?");
+    expect(applyAnswer(p, "di sera", now, open).create[0]).toMatchObject({ due_time: "19:00" });
+    expect(applyAnswer(p, "sì", now, open).create[0].due_time).toBe("07:00");
+    expect(applyAnswer(p, "no, alle 8", now, open).create[0].due_time).toBe("08:00");
+    expect(applyAnswer(p, "no", now, open).create).toEqual([]);
+    expect(applyAnswer(p, "no, venerdì alle 18 calcetto", now, open).create[0]).toMatchObject({ title: "Calcetto", due_time: "18:00" });
+  });
+  it("non chiede se il contesto è chiaro", () => {
+    expect(interpret("domani alle 7 cena da Marco", now, open)).toMatchObject({ question: null, create: [{ due_time: "19:00" }] });
+    expect(interpret("domani alle 7 sveglia per la palestra", now, open).question).toBeNull();
+  });
+  it("chiede conferma per frasi vaghe", () => {
+    expect(interpret("blabla", now, open).question).toContain("Va bene così");
   });
 });
