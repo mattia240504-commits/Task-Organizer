@@ -1,0 +1,4 @@
+ANTHROPIC_API_KEY=sk-ant-...
+APP_TOKEN=una-password-lunga
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=

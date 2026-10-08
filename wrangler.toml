@@ -1,0 +1,26 @@
+name = "promemoria-claude"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "promemoria"
+database_id = "SOSTITUISCI_CON_ID_DATABASE"
+migrations_dir = "migrations"
+
+[triggers]
+# Ogni minuto controlla i promemoria da notificare
+crons = ["* * * * *"]
+
+[vars]
+TIMEZONE = "Europe/Rome"
+VAPID_SUBJECT = "mailto:promemoria@example.com"
+# Segreti (da impostare con `npx wrangler secret put NOME`):
+# ANTHROPIC_API_KEY, APP_TOKEN, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY

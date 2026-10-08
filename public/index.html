@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Promemoria</title>
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Promemoria" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Accesso -->
+  <section id="login" class="screen" hidden>
+    <div class="login-card">
+      <img src="/icon.svg" alt="" width="72" height="72" />
+      <h1>Promemoria</h1>
+      <p>Inserisci il codice di accesso (APP_TOKEN) che hai scelto durante l'installazione.</p>
+      <form id="login-form">
+        <input id="token-input" type="password" autocomplete="current-password" placeholder="Codice di accesso" required />
+        <button type="submit" class="primary">Entra</button>
+      </form>
+      <p id="login-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- App -->
+  <section id="app" class="screen" hidden>
+    <header class="top">
+      <div>
+        <p id="today-label" class="eyebrow"></p>
+        <h1>Promemoria</h1>
+      </div>
+      <button id="settings-btn" class="icon-btn" aria-label="Impostazioni">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.6 2.1-1.8-.3a7 7 0 0 0-.7-1.7l1-1.5a.8.8 0 0 0-.1-1l-1.1-1.1a.8.8 0 0 0-1-.1l-1.5 1a7 7 0 0 0-1.7-.7l-.3-1.8a.8.8 0 0 0-.8-.6h-1.6a.8.8 0 0 0-.8.6l-.3 1.8a7 7 0 0 0-1.7.7l-1.5-1a.8.8 0 0 0-1 .1L4.4 6.1a.8.8 0 0 0-.1 1l1 1.5a7 7 0 0 0-.7 1.7l-1.8.3a.8.8 0 0 0-.6.8v1.6c0 .4.3.7.6.8l1.8.3c.2.6.4 1.2.7 1.7l-1 1.5a.8.8 0 0 0 .1 1l1.1 1.1c.3.3.7.3 1 .1l1.5-1c.5.3 1.1.5 1.7.7l.3 1.8c.1.4.4.6.8.6h1.6c.4 0 .7-.3.8-.6l.3-1.8a7 7 0 0 0 1.7-.7l1.5 1c.3.2.7.2 1-.1l1.1-1.1c.3-.3.3-.7.1-1l-1-1.5c.3-.5.5-1.1.7-1.7l1.8-.3c.4-.1.6-.4.6-.8v-1.6a.8.8 0 0 0-.6-.8Z"/></svg>
+      </button>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <div id="reply" class="reply" hidden>
+      <p id="reply-heard" class="heard"></p>
+      <p id="reply-text"></p>
+    </div>
+
+    <main id="list" aria-live="polite"></main>
+    <p id="empty" class="empty" hidden>Niente in programma.<br />Tocca il microfono e dimmi cosa devi ricordare.</p>
+
+    <button id="show-done" class="link-btn">Mostra completati</button>
+    <div id="done-list" hidden></div>
+
+    <footer class="composer">
+      <form id="compose-form">
+        <input id="compose-input" type="text" enterkeyhint="send" autocomplete="off"
+               placeholder="Es. domani alle 10 dentista, poi passare in farmacia" />
+        <button id="mic-btn" type="button" class="mic" aria-label="Parla">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2Z"/></svg>
+        </button>
+      </form>
+    </footer>
+  </section>
+
+  <!-- Impostazioni -->
+  <dialog id="settings">
+    <form method="dialog" class="sheet">
+      <header class="sheet-head">
+        <h2>Impostazioni</h2>
+        <button class="link-btn" value="close">Fine</button>
+      </header>
+
+      <h3>Notifiche</h3>
+      <p class="hint" id="push-hint"></p>
+      <div class="row">
+        <button type="button" id="push-btn" class="primary">Attiva notifiche</button>
+        <button type="button" id="push-test" class="secondary">Prova</button>
+      </div>
+
+      <h3>Riepilogo del mattino</h3>
+      <div class="row">
+        <input type="time" id="digest-time" />
+        <label class="check"><input type="checkbox" id="digest-off" /> Disattivato</label>
+      </div>
+
+      <h3>Voce</h3>
+      <label class="check"><input type="checkbox" id="speak-replies" /> Leggi ad alta voce le risposte</label>
+
+      <h3>Comando rapido per Siri</h3>
+      <p class="hint">Indirizzo da usare nel comando rapido:</p>
+      <code id="api-url"></code>
+      <p class="hint">Fuso orario: <span id="tz-label"></span></p>
+
+      <div class="row spaced">
+        <button type="button" id="logout-btn" class="danger">Esci</button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="item-tpl">
+    <article class="item">
+      <button class="check-btn" aria-label="Segna come fatto"></button>
+      <div class="body">
+        <p class="title"></p>
+        <p class="meta"></p>
+        <p class="notes"></p>
+        <a class="place" target="_blank" rel="noopener"></a>
+      </div>
+      <button class="del-btn" aria-label="Elimina">✕</button>
+    </article>
+  </template>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

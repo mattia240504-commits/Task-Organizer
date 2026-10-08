@@ -1,0 +1,36 @@
+{
+  "name": "promemoria-claude",
+  "version": "1.0.0",
+  "description": "Promemoria vocali con Siri e Claude",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 migrations apply promemoria --remote",
+    "db:init:local": "wrangler d1 migrations apply promemoria --local",
+    "vapid": "node scripts/generate-vapid.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mattia240504-commits/Task-Organizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mattia240504-commits/Task-Organizer/issues"
+  },
+  "homepage": "https://github.com/mattia240504-commits/Task-Organizer#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@types/node": "^26.6.4",
+    "http_ece": "^1.2.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "wrangler": "^4.148.0"
+  },
+  "private": true,
+  "type": "module"
+}
